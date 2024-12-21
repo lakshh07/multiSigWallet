@@ -343,10 +343,12 @@ contract MultiSig {
         return transferApprovals[_id][_owner];
     }
 
+    /// @notice receive function to deposit funds
     receive() external payable {
         deposit();
     }
 
+    /// @notice Fallback function to deposit funds
     fallback() external payable {
         deposit();
     }
