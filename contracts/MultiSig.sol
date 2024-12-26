@@ -2,6 +2,12 @@
 
 pragma solidity ^0.8.28;
 
+enum TransferStatus {
+    Pending,
+    Success,
+    Cancelled
+}
+
 contract MultiSig {
     event WalletOwnerAdded(
         address indexed addedBy,
@@ -31,7 +37,7 @@ contract MultiSig {
         address indexed receiver,
         uint256 amount,
         uint256 approvals,
-        bool status,
+        TransferStatus status,
         uint256 timeOfTransaction
     );
     event TransferCancelled(
@@ -40,7 +46,7 @@ contract MultiSig {
         address indexed receiver,
         uint256 amount,
         uint256 approvals,
-        bool status,
+        TransferStatus status,
         uint256 timeOfTransaction
     );
     event TransferApproved(
@@ -49,7 +55,7 @@ contract MultiSig {
         address indexed receiver,
         uint256 amount,
         uint256 approvals,
-        bool status,
+        TransferStatus status,
         uint256 timeOfTransaction
     );
     event TransferSent(
@@ -57,9 +63,10 @@ contract MultiSig {
         address indexed sender,
         address indexed receiver,
         uint256 amount,
-        bool status,
+        TransferStatus status,
         uint256 timeOfTransaction
     );
+    event ThresholdChanged(uint256 newThreshold, uint256 timeOfTransaction);
 
     error NotOwner();
     error NotSender();
@@ -75,6 +82,9 @@ contract MultiSig {
     error TransferNotFound();
     error TransferFailed();
     error InsufficientApprovals();
+    error AlreadyApproved();
+    error SenderCannotApprove();
+    error TransferNotPending();
 
     address private immutable mainOwner;
     mapping(address => bool) public isOwner;
@@ -93,14 +103,14 @@ contract MultiSig {
         uint256 amount;
         uint256 approvals;
         uint256 timeOfTransaction;
-        bool status;
+        TransferStatus status;
     }
 
     mapping(uint256 => mapping(address => bool)) private transferApprovals;
     mapping(uint256 => Transfer) private transfers;
 
-    constructor() {
-        mainOwner = msg.sender;
+    constructor(address _owner) {
+        mainOwner = _owner;
         walletOwners.push(mainOwner);
         isOwner[mainOwner] = true;
     }
@@ -117,6 +127,8 @@ contract MultiSig {
         if (_threshold > walletOwners.length) revert InvalidThreshold();
 
         threshold = _threshold;
+
+        emit ThresholdChanged(_threshold, block.timestamp);
     }
 
     /// @notice Adds a wallet owner
@@ -156,10 +168,11 @@ contract MultiSig {
         if (msg.value == 0) revert InvalidAmount();
 
         depositAmount[msg.sender] += msg.value;
-        unchecked {}
+        unchecked {
+            ++depositId;
+        }
 
         emit DepositMade(msg.sender, msg.value, depositId, block.timestamp);
-        ++depositId;
     }
 
     /// @notice Withdraws funds from the contract
@@ -205,6 +218,7 @@ contract MultiSig {
         newTransfer.amount = _amount;
         newTransfer.approvals = 0;
         newTransfer.timeOfTransaction = block.timestamp;
+        newTransfer.status = TransferStatus.Pending;
 
         unchecked {
             ++transferId;
@@ -216,7 +230,7 @@ contract MultiSig {
             _receiver,
             _amount,
             0,
-            false,
+            TransferStatus.Pending,
             block.timestamp
         );
     }
@@ -226,8 +240,10 @@ contract MultiSig {
     function approveTransfer(uint256 _id) external onlyOwners {
         Transfer storage transfer = transfers[_id];
         if (transfer.receiver == address(0)) revert TransferNotFound();
-        if (transferApprovals[_id][msg.sender]) revert("Already approved");
-        if (transfer.sender == msg.sender) revert("Sender cannot approve");
+        if (transferApprovals[_id][msg.sender]) revert AlreadyApproved();
+        if (transfer.sender == msg.sender) revert SenderCannotApprove();
+        if (transfer.status != TransferStatus.Pending)
+            revert TransferNotPending();
 
         transferApprovals[_id][msg.sender] = true;
         transfer.approvals += 1;
@@ -238,7 +254,7 @@ contract MultiSig {
             transfer.receiver,
             transfer.amount,
             transfer.approvals,
-            false,
+            TransferStatus.Pending,
             block.timestamp
         );
 
@@ -253,9 +269,11 @@ contract MultiSig {
         Transfer storage transfer = transfers[_id];
         if (transfer.receiver == address(0)) revert TransferNotFound();
         if (transfer.sender != msg.sender) revert NotSender();
+        if (transfer.status != TransferStatus.Pending)
+            revert TransferNotPending();
 
         depositAmount[transfer.sender] += transfer.amount;
-        delete transfers[_id];
+        transfer.status = TransferStatus.Cancelled;
 
         emit TransferCancelled(
             _id,
@@ -263,7 +281,7 @@ contract MultiSig {
             transfer.receiver,
             transfer.amount,
             transfer.approvals,
-            false,
+            TransferStatus.Cancelled,
             block.timestamp
         );
     }
@@ -273,10 +291,11 @@ contract MultiSig {
     function sendTransfer(uint256 _id) private onlyOwners {
         Transfer storage transfer = transfers[_id];
         if (transfer.receiver == address(0)) revert TransferNotFound();
-        if (transfer.approvals < walletOwners.length)
-            revert InsufficientApprovals();
+        if (transfer.approvals < threshold) revert InsufficientApprovals();
+        if (transfer.status != TransferStatus.Pending)
+            revert TransferNotPending();
 
-        transfer.status = true;
+        transfer.status = TransferStatus.Success;
         (bool success, ) = transfer.receiver.call{value: transfer.amount}("");
         if (!success) revert TransferFailed();
 
@@ -285,7 +304,7 @@ contract MultiSig {
             transfer.sender,
             transfer.receiver,
             transfer.amount,
-            true,
+            TransferStatus.Success,
             block.timestamp
         );
     }

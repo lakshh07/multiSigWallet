@@ -36,7 +36,7 @@ contract MultiSigFactory {
             revert MaxWalletsReached();
         }
 
-        MultiSig newWallet = new MultiSig();
+        MultiSig newWallet = new MultiSig(msg.sender);
         address walletAddress = address(newWallet);
         uint96 walletId = totalWallets;
 
